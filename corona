@@ -1,0 +1,804 @@
+#!/bin/sh
+
+# Exports
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UTF-8
+export LC_ALL=C
+
+# Function printing help
+print_h()
+{
+  printf "\n"
+  echo "Usage: corona [-h]"
+  echo "       corona [FILTERS...] [COMMAND] [LOG...]"
+  printf "\n"
+  echo "COMMAND: infected      counts the number of infected"
+  echo "         merge         merges multiple logfiles into one, keeping the order"
+  echo "         gender        prints out the number of infected for each gender"
+  echo "         age           prints out the statistics of infected according to age"
+  echo "         daily         prints out the statistics of infected for individual days"
+  echo "         monthly       prints out the statistics of infected for individual months"
+  echo "         yearly        prints out the statistics of infected for individual years"
+  echo "         countries     prints out the statistics of infected for individual countries (excluding code cz)"
+  echo "         districts     prints out the statistics of infected for individual districts"
+  echo "         regions       prints out the statistics of infected for individual regions"
+  printf "\n"
+  echo "FILTERS: -a DATETIME   considers records only AFTER this date, inclusive"
+  echo "                       DATETIME format is YYYY-MM-DD"
+  echo "         -b DATETIME   considers records only BEFORE this date, inclusive"
+  echo "                       DATETIME format is YYYY-MM-DD"
+  echo "         -g GENDER     considers records only with this specified gender"
+  echo "                       GENDER can be M (men) or W (women)"
+  echo "         -s [WIDTH]    for commands gender, age, daily, monthly, yearly, countries, districts, regions"
+  echo "                       prints out data not numerically, but using histograms"
+  echo "                       optional [WIDTH] sets the width of the histograms, therefore is a positive integer"
+  printf "\n"
+  echo "-h       prints out help with slight descriptions of each command and filter"
+  printf "\n"
+}
+
+# Variables storing program arguments
+COMMAND=""
+STDIN=0
+A_DATETIME=""
+B_DATETIME="9999-99-99"
+GENDER=""
+WIDTH=""
+
+# Variables storing different log files
+LOGS=""
+
+# While for loading arguments into their respective variables
+# Everytime it loads something into a variable, it shifts accordingly
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  infected | merge | gender | age | daily | monthly | yearly | countries | districts | regions)
+    COMMAND="$1"
+    shift
+    ;;
+  -a)
+    A_DATETIME="$2"
+    if [ ${#A_DATETIME} != 10 ]
+    then
+      eval "printf \"Error: invalid argument\n\" | cat 1>&2"
+      exit 1
+    fi
+    shift
+    shift
+    ;;
+  -b)
+    B_DATETIME="$2"
+    if [ ${#B_DATETIME} != 10 ]
+    then
+      eval "printf \"Error: invalid argument\n\" | cat 1>&2"
+      exit 1
+    fi
+    shift
+    shift
+    ;;
+  -g)
+    if [ "$2" = M -o "$2" = Z ]
+    then
+      GENDER="$2"
+    else
+      eval "printf \"Error: invalid argument\n\" | cat 1>&2"
+      exit 1
+    fi
+    shift
+    shift
+    ;;
+  -s)
+    if [ -n "${2##*[!0-9]*}" ]
+    then
+      WIDTH="$2"
+      shift
+      shift
+    else
+      WIDTH="default"
+      shift
+    fi
+    ;;
+  -h)
+    print_h
+    exit 0
+    ;;
+  *)
+    if [ "${1##*.}" = "csv" ]
+    then
+      LOGS="$LOGS $1"
+    elif [ "${1##*.}" = "gz" ]
+    then
+      LOGS="$LOGS $1"
+    elif [ "${1##*.}" = "bz2" ]
+    then
+      LOGS="$LOGS $1"
+    else
+      eval "printf \"Error: invalid argument\n\" | cat 1>&2"
+      exit 1
+    fi
+    shift
+    ;;
+  esac
+done
+
+# Variable that is going to store all the inputs, unzip files
+READ_INPUT=""
+
+if [ -n "$LOGS" ]
+then
+  for log in $LOGS
+  do
+    if [ "${log##*.}" = "csv" ]
+    then
+      READ_INPUT=${READ_INPUT}$(cat "$log")
+      READ_INPUT="${READ_INPUT}
+"
+    elif [ "${log##*.}" = "gz" ]
+    then
+      READ_INPUT=${READ_INPUT}$(gzip -d -c "$log")
+      READ_INPUT="${READ_INPUT}
+"
+    elif [ "${log##*.}" = "bz2" ]
+    then
+      READ_INPUT=${READ_INPUT}$(bzip2 -d -c "$log")
+      READ_INPUT="${READ_INPUT}
+"
+    fi
+  done
+fi
+
+
+# Delete spaces
+READ_INPUT=$(echo "$READ_INPUT" | awk '{ gsub(/ /,""); print }')
+
+
+# Validate input (correct age, date)
+if [ "$READ_INPUT" != "" ]
+then
+  VALID_INPUT=$(echo "$READ_INPUT" | awk -F ',' -vYEAR="" -vMONTH="" -vDAY="" {'YEAR=substr($2, 1, 4); MONTH=substr($2, 6, 2); DAY=substr($2, 9, 2); \
+                                     if (NF < 2) {} \
+                                     else if ($2 == "datum") {} \
+                                     else if (($3 != "") && ($3 < 0 || $3%1 != 0)) \
+                                      {print "Invalid age: " $0 | "cat 1>&2"} \
+                                     else if (MONTH > 12) {print "Invalid date: " $0 | "cat 1>&2"} \
+                                     else if (DAY > 31 && (MONTH == "01" || MONTH == "03" || MONTH == "05" || \
+                                              MONTH == "07" || MONTH == "08" || MONTH == "10" || MONTH == "12")) \
+                                                {print "Invalid date: " $0 | "cat 1>&2"} \
+                                     else if (DAY > 30 && (MONTH == "04" || MONTH == "06" || MONTH == "09" || \
+                                              MONTH == "11")) \
+                                                {print "Invalid date: " $0 | "cat 1>&2"} \
+                                     else if (DAY > 29 && (MONTH == "02") && ((YEAR%100 != 0 && YEAR%4 == 0) || (YEAR%100 == 0 && YEAR%400 == 0))) \
+                                                {print "Invalid date: " $0 | "cat 1>&2"} \
+                                     else if (DAY > 28 && (MONTH == "02") && !((YEAR%100 != 0 && YEAR%4 == 0) || (YEAR%100 == 0 && YEAR%400 == 0))) \
+                                                {print "Invalid date: " $0 | "cat 1>&2"} \
+                                     else if (length($2) != 10) {print "Invalid date: " $0 | "cat 1>&2"} \
+                                     else {print $0}'})
+else
+  STDIN=1
+  VALID_INPUT=$(awk -F ',' -vYEAR="" -vMONTH="" -vDAY="" {'YEAR=substr($2, 1, 4); MONTH=substr($2, 6, 2); DAY=substr($2, 9, 2); \
+                                       if (NF < 2) {} \
+                                       else if ($2 == "datum") {} \
+                                       else if (($3 != "") && ($3 < 0 || $3%1 != 0)) \
+                                        {print "Invalid age: " $0 | "cat 1>&2"} \
+                                       else if (MONTH > 12) {print "Invalid date: " $0 | "cat 1>&2"} \
+                                       else if (DAY > 31 && (MONTH == "01" || MONTH == "03" || MONTH == "05" || \
+                                                MONTH == "07" || MONTH == "08" || MONTH == "10" || MONTH == "12")) \
+                                                  {print "Invalid date: " $0 | "cat 1>&2"} \
+                                       else if (DAY > 30 && (MONTH == "04" || MONTH == "06" || MONTH == "09" || \
+                                                MONTH == "11")) \
+                                                  {print "Invalid date: " $0 | "cat 1>&2"} \
+                                       else if (DAY > 29 && (MONTH == "02") && ((YEAR%100 != 0 && YEAR%4 == 0) || (YEAR%100 == 0 && YEAR%400 == 0))) \
+                                                  {print "Invalid date: " $0 | "cat 1>&2"} \
+                                       else if (DAY > 28 && (MONTH == "02") && !((YEAR%100 != 0 && YEAR%4 == 0) || (YEAR%100 == 0 && YEAR%400 == 0))) \
+                                                  {print "Invalid date: " $0 | "cat 1>&2"} \
+                                       else if (length($2) != 10) {print "Invalid date: " $0 | "cat 1>&2"} \
+                                       else {print $0}'})
+fi
+
+# Variable used to filter the results outputted by READ_INPUT
+READ_FILTERS=""
+
+# Always compare with A_DATETIME and B_DATETIME, if they're not set, every log date should be bigger than A_DATETIME
+# and smaller than B_DATETIME, depending if gender was set, check the according gender too
+if [ -z "$GENDER" ]
+then
+  READ_FILTERS=$(echo "$VALID_INPUT" | awk -F ',' -vA_DATETIME="$A_DATETIME" -vB_DATETIME="$B_DATETIME" \
+                                      {'if ($2 >= A_DATETIME && $2 <= B_DATETIME) {print $0}'})
+elif [ "$GENDER" = "Z" -o "$GENDER" = "M" ]
+then
+  READ_FILTERS=$(echo "$VALID_INPUT" | awk -F ',' -vA_DATETIME="$A_DATETIME" -vB_DATETIME="$B_DATETIME" -vGENDER="$GENDER" \
+                                      {'if ($2 >= A_DATETIME && $2 <= B_DATETIME && $4 == GENDER) {print $0}'})
+fi
+
+#echo "$READ_FILTERS"
+
+# Count the number of infected
+if [ "$COMMAND" = "infected" ]
+then
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | awk 'END{print NR}')
+
+# Count the genders
+elif [ "$COMMAND" = "gender" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 4,4 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 \
+                                                              '{if (NR == 1) {ITEM=$4} else { PREV_ITEM=ITEM; ITEM=$4; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {printf "%s: %d\n", ITEM, COUNT+1; \
+                                                                     if (N_COUNT != 0) {printf "None: %d\n", N_COUNT }}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 4,4 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=$4} else { PREV_ITEM=ITEM; ITEM=$4; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {REMAINDER=COUNT%100000; COUNT=(COUNT-REMAINDER)/100000; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%100000; COUNT=(COUNT-REMAINDER)/100000; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {REMAINDER=N_COUNT%100000; N_COUNT=(N_COUNT-REMAINDER)/100000; \
+                                                                     printf "None: "; for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 4,4 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vMAX=0 -vWIDTH="$WIDTH"\
+                                                                  '{if (NR == 1) {ITEM=$4} else { PREV_ITEM=ITEM; ITEM=$4; COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT} ; COUNT=0 }}}} \
+                                                                    END {if (N_COUNT > MAX) {MAX = N_COUNT}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 4,4 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK" \
+                                                              '{if (NR == 1) {ITEM=$4} else { PREV_ITEM=ITEM; ITEM=$4; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0};; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "None: "; for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  fi
+
+# Count the different ages
+elif [ "$COMMAND" = "age" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 3,3 | awk -F ',' -vCOUNT_5=0 -vCOUNT_15=0 -vCOUNT_25=0 -vCOUNT_35=0 -vCOUNT_45=0 \
+                                                             -vCOUNT_55=0 -vCOUNT_65=0 -vCOUNT_75=0 -vCOUNT_85=0 -vCOUNT_95=0 -vCOUNT_105=0 \
+                                                             -vCOUNT_MORE=0 -vN_COUNT=0 \
+                                                              '{if ($3 == "") {N_COUNT++} \
+                                                                else { if ($3 <= 5) {COUNT_5++} \
+                                                                       else if ($3 <= 15) {COUNT_15++} \
+                                                                       else if ($3 <= 25) {COUNT_25++} \
+                                                                       else if ($3 <= 35) {COUNT_35++} \
+                                                                       else if ($3 <= 45) {COUNT_45++} \
+                                                                       else if ($3 <= 55) {COUNT_55++} \
+                                                                       else if ($3 <= 65) {COUNT_65++} \
+                                                                       else if ($3 <= 75) {COUNT_75++} \
+                                                                       else if ($3 <= 85) {COUNT_85++} \
+                                                                       else if ($3 <= 95) {COUNT_95++} \
+                                                                       else if ($3 <= 105) {COUNT_105++} \
+                                                                       else {COUNT_MORE++} \
+                                                                       }}
+                                                              END { printf "0-5   : %d\n", COUNT_5;
+                                                                    printf "6-15  : %d\n", COUNT_15;
+                                                                    printf "16-25 : %d\n", COUNT_25;
+                                                                    printf "26-35 : %d\n", COUNT_35;
+                                                                    printf "36-45 : %d\n", COUNT_45;
+                                                                    printf "46-55 : %d\n", COUNT_55;
+                                                                    printf "56-65 : %d\n", COUNT_65;
+                                                                    printf "66-75 : %d\n", COUNT_75;
+                                                                    printf "76-85 : %d\n", COUNT_85;
+                                                                    printf "86-95 : %d\n", COUNT_95;
+                                                                    printf "96-105: %d\n", COUNT_105;
+                                                                    printf ">105  : %d\n", COUNT_MORE;
+                                                                    if (N_COUNT != 0) { printf "None  : %d\n", N_COUNT }
+                                                                   }')
+
+  elif [ "$WIDTH" = "default" ]
+  then
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 3,3 | awk -F ',' -vCOUNT_5=0 -vCOUNT_15=0 -vCOUNT_25=0 -vCOUNT_35=0 -vCOUNT_45=0 \
+                                                             -vCOUNT_55=0 -vCOUNT_65=0 -vCOUNT_75=0 -vCOUNT_85=0 -vCOUNT_95=0 -vCOUNT_105=0 \
+                                                             -vCOUNT_MORE=0 -vN_COUNT=0 -vREMAINDER=0\
+                                                              '{if ($3 == "") {N_COUNT++} \
+                                                                else { if ($3 <= 5) {COUNT_5++} \
+                                                                       else if ($3 <= 15) {COUNT_15++} \
+                                                                       else if ($3 <= 25) {COUNT_25++} \
+                                                                       else if ($3 <= 35) {COUNT_35++} \
+                                                                       else if ($3 <= 45) {COUNT_45++} \
+                                                                       else if ($3 <= 55) {COUNT_55++} \
+                                                                       else if ($3 <= 65) {COUNT_65++} \
+                                                                       else if ($3 <= 75) {COUNT_75++} \
+                                                                       else if ($3 <= 85) {COUNT_85++} \
+                                                                       else if ($3 <= 95) {COUNT_95++} \
+                                                                       else if ($3 <= 105) {COUNT_105++} \
+                                                                       else {COUNT_MORE++} \
+                                                                       }}
+                                                              END { printf "0-5   :", COUNT_5; \
+                                                                      REMAINDER=COUNT_5%10000; COUNT_5=(COUNT_5-REMAINDER)/10000; \
+                                                                      if (COUNT_5 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_5; i++) printf "#"; printf "\n"; \
+                                                                    printf "6-15  :", COUNT_15;
+                                                                      REMAINDER=COUNT_15%10000; COUNT_15=(COUNT_15-REMAINDER)/10000; \
+                                                                      if (COUNT_15 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_15; i++) printf "#"; printf "\n"; \
+                                                                    printf "16-25 :", COUNT_25;
+                                                                      REMAINDER=COUNT_25%10000; COUNT_25=(COUNT_25-REMAINDER)/10000; \
+                                                                      if (COUNT_25 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_25; i++) printf "#"; printf "\n"; \
+                                                                    printf "26-35 :", COUNT_35;
+                                                                      REMAINDER=COUNT_35%10000; COUNT_35=(COUNT_35-REMAINDER)/10000; \
+                                                                      if (COUNT_35 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_35; i++) printf "#"; printf "\n"; \
+                                                                    printf "36-45 :", COUNT_45;
+                                                                      REMAINDER=COUNT_45%10000; COUNT_45=(COUNT_45-REMAINDER)/10000; \
+                                                                      if (COUNT_45 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_45; i++) printf "#"; printf "\n"; \
+                                                                    printf "46-55 :", COUNT_55;
+                                                                      REMAINDER=COUNT_55%10000; COUNT_55=(COUNT_55-REMAINDER)/10000; \
+                                                                      if (COUNT_55 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_55; i++) printf "#"; printf "\n"; \
+                                                                    printf "56-65 :", COUNT_65;
+                                                                      REMAINDER=COUNT_65%10000; COUNT_65=(COUNT_65-REMAINDER)/10000; \
+                                                                      if (COUNT_65 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_65; i++) printf "#"; printf "\n"; \
+                                                                    printf "66-75 :", COUNT_75;
+                                                                      REMAINDER=COUNT_75%10000; COUNT_75=(COUNT_75-REMAINDER)/10000; \
+                                                                      if (COUNT_75 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_75; i++) printf "#"; printf "\n"; \
+                                                                    printf "76-85 :", COUNT_85;
+                                                                      REMAINDER=COUNT_85%10000; COUNT_85=(COUNT_85-REMAINDER)/10000; \
+                                                                      if (COUNT_85 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_85; i++) printf "#"; printf "\n"; \
+                                                                    printf "86-95 :", COUNT_95;
+                                                                      REMAINDER=COUNT_95%10000; COUNT_95=(COUNT_95-REMAINDER)/10000; \
+                                                                      if (COUNT_95 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_95; i++) printf "#"; printf "\n"; \
+                                                                    printf "96-105:", COUNT_105;
+                                                                      REMAINDER=COUNT_105%10000; COUNT_105=(COUNT_105-REMAINDER)/10000; \
+                                                                      if (COUNT_105 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_105; i++) printf "#"; printf "\n"; \
+                                                                    printf ">105  :", COUNT_MORE;
+                                                                      REMAINDER=COUNT_MORE%10000; COUNT_MORE=(COUNT_MORE-REMAINDER)/10000; \
+                                                                      if (COUNT_MORE != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_MORE; i++) printf "#"; printf "\n"; \
+                                                                    if (N_COUNT != 0) { printf "None  :", N_COUNT;
+                                                                      REMAINDER=N_COUNT%10000; N_COUNT=(N_COUNT-REMAINDER)/10000; \
+                                                                      if (N_COUNT != 0) printf " "; \
+                                                                      for(i=0; i<N_COUNT; i++) printf "#"; printf "\n"; }\
+                                                                   }')
+  else
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 3,3 | awk -F ',' -vCOUNT_5=0 -vCOUNT_15=0 -vCOUNT_25=0 -vCOUNT_35=0 -vCOUNT_45=0 \
+                                                             -vCOUNT_55=0 -vCOUNT_65=0 -vCOUNT_75=0 -vCOUNT_85=0 -vCOUNT_95=0 -vCOUNT_105=0 \
+                                                             -vCOUNT_MORE=0 -vN_COUNT=0 -vREMAINDER=0 -vMAX=0 -vCHUNK=0 -vWIDTH="$WIDTH" \
+                                                              '{if ($3 == "") {N_COUNT++} \
+                                                                else { if ($3 <= 5) {COUNT_5++} \
+                                                                       else if ($3 <= 15) {COUNT_15++} \
+                                                                       else if ($3 <= 25) {COUNT_25++} \
+                                                                       else if ($3 <= 35) {COUNT_35++} \
+                                                                       else if ($3 <= 45) {COUNT_45++} \
+                                                                       else if ($3 <= 55) {COUNT_55++} \
+                                                                       else if ($3 <= 65) {COUNT_65++} \
+                                                                       else if ($3 <= 75) {COUNT_75++} \
+                                                                       else if ($3 <= 85) {COUNT_85++} \
+                                                                       else if ($3 <= 95) {COUNT_95++} \
+                                                                       else if ($3 <= 105) {COUNT_105++} \
+                                                                       else {COUNT_MORE++} \
+                                                                       }}
+                                                              END { if (COUNT_5 > MAX) {MAX = COUNT_5}; \
+                                                                    if (COUNT_15 > MAX) {MAX = COUNT_15}; \
+                                                                    if (COUNT_25 > MAX) {MAX = COUNT_25}; \
+                                                                    if (COUNT_35 > MAX) {MAX = COUNT_35}; \
+                                                                    if (COUNT_45 > MAX) {MAX = COUNT_45}; \
+                                                                    if (COUNT_55 > MAX) {MAX = COUNT_55}; \
+                                                                    if (COUNT_65 > MAX) {MAX = COUNT_65}; \
+                                                                    if (COUNT_75 > MAX) {MAX = COUNT_75}; \
+                                                                    if (COUNT_85 > MAX) {MAX = COUNT_85}; \
+                                                                    if (COUNT_95 > MAX) {MAX = COUNT_95}; \
+                                                                    if (COUNT_105 > MAX) {MAX = COUNT_105}; \
+                                                                    if (COUNT_MORE > MAX) {MAX = COUNT_MORE}; \
+                                                                    if (N_COUNT > MAX) {MAX = N_COUNT}; \
+                                                                    CHUNK=(MAX-(MAX%WIDTH))/WIDTH; \
+                                                                    printf "0-5   :", COUNT_5; \
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_5%CHUNK; COUNT_5=(COUNT_5-REMAINDER)/CHUNK} else {COUNT_5 = 0}; \
+                                                                      if (COUNT_5 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_5; i++) printf "#"; printf "\n"; \
+                                                                    printf "6-15  :", COUNT_15;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_15%CHUNK; COUNT_15=(COUNT_15-REMAINDER)/CHUNK} else {COUNT_15 = 0}; \
+                                                                      if (COUNT_15 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_15; i++) printf "#"; printf "\n"; \
+                                                                    printf "16-25 :", COUNT_25;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_25%CHUNK; COUNT_25=(COUNT_25-REMAINDER)/CHUNK} else {COUNT_25 = 0}; \
+                                                                      if (COUNT_25 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_25; i++) printf "#"; printf "\n"; \
+                                                                    printf "26-35 :", COUNT_35;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_35%CHUNK; COUNT_35=(COUNT_35-REMAINDER)/CHUNK} else {COUNT_35 = 0}; \
+                                                                      if (COUNT_35 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_35; i++) printf "#"; printf "\n"; \
+                                                                    printf "36-45 :", COUNT_45;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_45%CHUNK; COUNT_45=(COUNT_45-REMAINDER)/CHUNK} else {COUNT_45 = 0}; \
+                                                                      if (COUNT_45 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_45; i++) printf "#"; printf "\n"; \
+                                                                    printf "46-55 :", COUNT_55;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_55%CHUNK; COUNT_55=(COUNT_55-REMAINDER)/CHUNK} else {COUNT_55 = 0}; \
+                                                                      if (COUNT_55 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_55; i++) printf "#"; printf "\n"; \
+                                                                    printf "56-65 :", COUNT_65;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_65%CHUNK; COUNT_65=(COUNT_65-REMAINDER)/CHUNK} else {COUNT_65 = 0}; \
+                                                                      if (COUNT_65 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_65; i++) printf "#"; printf "\n"; \
+                                                                    printf "66-75 :", COUNT_75;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_75%CHUNK; COUNT_75=(COUNT_75-REMAINDER)/CHUNK} else {COUNT_75 = 0}; \
+                                                                      if (COUNT_75 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_75; i++) printf "#"; printf "\n"; \
+                                                                    printf "76-85 :", COUNT_85;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_85%CHUNK; COUNT_85=(COUNT_85-REMAINDER)/CHUNK} else {COUNT_85 = 0}; \
+                                                                      if (COUNT_85 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_85; i++) printf "#"; printf "\n"; \
+                                                                    printf "86-95 :", COUNT_95;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_95%CHUNK; COUNT_95=(COUNT_95-REMAINDER)/CHUNK} else {COUNT_95 = 0}; \
+                                                                      if (COUNT_95 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_95; i++) printf "#"; printf "\n"; \
+                                                                    printf "96-105:", COUNT_105;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_105%CHUNK; COUNT_105=(COUNT_105-REMAINDER)/CHUNK} else {COUNT_105 = 0}; \
+                                                                      if (COUNT_105 != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_105; i++) printf "#"; printf "\n"; \
+                                                                    printf ">105  :", COUNT_MORE;
+                                                                      if (CHUNK != 0) {REMAINDER=COUNT_MORE%CHUNK; COUNT_MORE=(COUNT_MORE-REMAINDER)/CHUNK} else {COUNT_MORE = 0}; \
+                                                                      if (COUNT_MORE != 0) printf " "; \
+                                                                      for(i=0; i<COUNT_MORE; i++) printf "#"; printf "\n"; \
+                                                                    if (N_COUNT != 0) { printf "None  :", N_COUNT;
+                                                                      if (CHUNK != 0) {REMAINDER=N_COUNT%CHUNK; N_COUNT=(N_COUNT-REMAINDER)/CHUNK} else {N_COUNT = 0}; \
+                                                                      if (N_COUNT != 0) printf " "; \
+                                                                      for(i=0; i<N_COUNT; i++) printf "#"; printf "\n"; }\
+                                                                   }')
+  fi
+
+# Count the infected for each day
+elif [ "$COMMAND" = "daily" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 \
+                                                              '{if (NR == 1) {ITEM=$2} else { PREV_ITEM=ITEM; ITEM=$2; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {printf "%s: %d\n", ITEM, COUNT+1; \
+                                                                     if (N_COUNT != 0) {printf "None: %d\n", N_COUNT }}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=$2} else { PREV_ITEM=ITEM; ITEM=$2; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {REMAINDER=COUNT%500; COUNT=(COUNT-REMAINDER)/500; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%500; COUNT=(COUNT-REMAINDER)/500; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {REMAINDER=N_COUNT%500; N_COUNT=(N_COUNT-REMAINDER)/500; \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vWIDTH="$WIDTH" \
+                                                                  '{if (NR == 1) {ITEM=$2} \
+                                                                    else { PREV_ITEM=ITEM; ITEM=$2; COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT}; COUNT=0 }}}} \
+                                                                    END {if (N_COUNT > MAX) {MAX = N_COUNT}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK" \
+                                                              '{if (NR == 1) {ITEM=$2} \
+                                                                else { PREV_ITEM=ITEM; ITEM=$2; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) { \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     if (CHUNK != 0) {REMAINDER=N_COUNT%CHUNK; N_COUNT=(N_COUNT-REMAINDER)/CHUNK} else {N_COUNT=0};
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  fi
+
+# Count the infected for each month
+elif [ "$COMMAND" = "monthly" ]
+then
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 \
+                                                              '{if (NR == 1) {ITEM=substr($2,0,7)} \
+                                                                else { PREV_ITEM=ITEM; ITEM=substr($2,0,7); COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {printf "%s: %d\n", ITEM, COUNT+1; \
+                                                                     if (N_COUNT != 0) {printf "None: %d\n", N_COUNT }}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=substr($2, 0, 7)} \
+                                                                else { PREV_ITEM=ITEM; ITEM=substr($2, 0, 7); COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {REMAINDER=COUNT%10000; COUNT=(COUNT-REMAINDER)/10000; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%10000; COUNT=(COUNT-REMAINDER)/10000; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {REMAINDER=N_COUNT%10000; N_COUNT=(N_COUNT-REMAINDER)/10000; \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vWIDTH="$WIDTH" \
+                                                                  '{if (NR == 1) {ITEM=substr($2,0,7)} \
+                                                                    else { PREV_ITEM=ITEM; ITEM=substr($2,0,7); COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT}; COUNT=0 }}}} \
+                                                                    END {if (N_COUNT > MAX) {MAX = N_COUNT}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK" \
+                                                              '{if (NR == 1) {ITEM=substr($2, 0, 7)} \
+                                                                else { PREV_ITEM=ITEM; ITEM=substr($2, 0, 7); COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) { \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     if (CHUNK != 0) {REMAINDER=N_COUNT%CHUNK; N_COUNT=(N_COUNT-REMAINDER)/CHUNK} else {N_COUNT=0};
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  fi
+
+# Count the infected for each year
+elif [ "$COMMAND" = "yearly" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 \
+                                                              '{if (NR == 1) {ITEM=substr($2,0,4)} \
+                                                                else { PREV_ITEM=ITEM; ITEM=substr($2,0,4); COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {printf "%s: %d\n", ITEM, COUNT+1; \
+                                                                     if (N_COUNT != 0) {printf "None: %d\n", N_COUNT }}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=substr($2, 0, 4)} \
+                                                                else { PREV_ITEM=ITEM; ITEM=substr($2, 0, 4); COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {REMAINDER=COUNT%100000; COUNT=(COUNT-REMAINDER)/100000; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%100000; COUNT=(COUNT-REMAINDER)/100000; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {REMAINDER=N_COUNT%100000; N_COUNT=(N_COUNT-REMAINDER)/100000; \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vWIDTH="$WIDTH" \
+                                                                  '{if (NR == 1) {ITEM=substr($2,0,4)} \
+                                                                    else { PREV_ITEM=ITEM; ITEM=substr($2,0,4); COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT}; COUNT=0 }}}} \
+                                                                    END {if (N_COUNT > MAX) {MAX = N_COUNT}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 2,2 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK" \
+                                                              '{if (NR == 1) {ITEM=substr($2, 0, 4)} \
+                                                                else { PREV_ITEM=ITEM; ITEM=substr($2, 0, 4); COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) { \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     if (CHUNK != 0) {REMAINDER=N_COUNT%CHUNK; N_COUNT=(N_COUNT-REMAINDER)/CHUNK} else {N_COUNT=0};
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  fi
+
+# Count the infected for each country (excluding CZ)
+elif [ "$COMMAND" = "countries" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 8,8 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 \
+                                                              '{if (NR == 1) {ITEM=$8} else { PREV_ITEM=ITEM; ITEM=$8; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (PREV_ITEM == "CZ" || !PREV_ITEM) {COUNT=0} \
+                                                                     else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {if (ITEM != "CZ") {printf "%s: %d\n", ITEM, COUNT+1}}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 8,8 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=$8} else { PREV_ITEM=ITEM; ITEM=$8; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (PREV_ITEM == "CZ" || !PREV_ITEM) {COUNT=0} \
+                                                                    else {REMAINDER=COUNT%100; COUNT=(COUNT-REMAINDER)/100; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%100; COUNT=(COUNT-REMAINDER)/100; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 8,8 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vWIDTH="$WIDTH" \
+                                                                  '{if (NR == 1) {ITEM=$8} \
+                                                                    else { PREV_ITEM=ITEM; ITEM=$8; COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (PREV_ITEM == "CZ" || !PREV_ITEM) {COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT}; COUNT=0 }}}} \
+                                                                    END {if (ITEM != "CZ" && COUNT+1 > MAX) {MAX = COUNT+1}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 8,8 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK"\
+                                                              '{if (NR == 1) {ITEM=$8} else { PREV_ITEM=ITEM; ITEM=$8; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (PREV_ITEM == "CZ" || !PREV_ITEM) {COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"}')
+  fi
+
+# Count the infected for each district
+elif [ "$COMMAND" = "districts" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 6,6 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 \
+                                                              '{if (NR == 1) {ITEM=$6} else { PREV_ITEM=ITEM; ITEM=$6; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {printf "%s: %d\n", ITEM, COUNT+1; \
+                                                                     if (N_COUNT != 0) {printf "None: %d\n", N_COUNT }}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 6,6 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=$6} else { PREV_ITEM=ITEM; ITEM=$6; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {REMAINDER=COUNT%1000; COUNT=(COUNT-REMAINDER)/1000; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%1000; COUNT=(COUNT-REMAINDER)/1000; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {REMAINDER=N_COUNT%1000; N_COUNT=(N_COUNT-REMAINDER)/1000; \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 6,6 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vWIDTH="$WIDTH" \
+                                                                  '{if (NR == 1) {ITEM=$6} \
+                                                                    else { PREV_ITEM=ITEM; ITEM=$6; COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT}; COUNT=0 }}}} \
+                                                                    END {if (N_COUNT > MAX) {MAX = N_COUNT}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 6,6 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK" \
+                                                              '{if (NR == 1) {ITEM=$6} \
+                                                                else { PREV_ITEM=ITEM; ITEM=$6; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) { \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     if (CHUNK != 0) {REMAINDER=N_COUNT%CHUNK; N_COUNT=(N_COUNT-REMAINDER)/CHUNK} else {N_COUNT=0};
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  fi
+
+# Count the infected for each region
+elif [ "$COMMAND" = "regions" ]
+then
+
+  if [ "$WIDTH" = "" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 5,5 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 \
+                                                              '{if (NR == 1) {ITEM=$5} else { PREV_ITEM=ITEM; ITEM=$5; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {printf "%s: %d\n", PREV_ITEM, COUNT; COUNT=0 }}}} \
+                                                                END {printf "%s: %d\n", ITEM, COUNT+1; \
+                                                                     if (N_COUNT != 0) {printf "None: %d\n", N_COUNT }}')
+  elif [ "$WIDTH" = "default" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 5,5 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 \
+                                                              '{if (NR == 1) {ITEM=$5} else { PREV_ITEM=ITEM; ITEM=$5; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {REMAINDER=COUNT%10000; COUNT=(COUNT-REMAINDER)/10000; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; REMAINDER=COUNT%10000; COUNT=(COUNT-REMAINDER)/10000; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) {REMAINDER=N_COUNT%10000; N_COUNT=(N_COUNT-REMAINDER)/10000; \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  else
+    CHUNK=$(echo "$READ_FILTERS" | sort -t ',' -k 5,5 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vWIDTH="$WIDTH" \
+                                                                  '{if (NR == 1) {ITEM=$5} \
+                                                                    else { PREV_ITEM=ITEM; ITEM=$5; COUNT++; \
+                                                                      if (PREV_ITEM != ITEM) \
+                                                                        {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                        else {if (COUNT > MAX) {MAX = COUNT}; COUNT=0 }}}} \
+                                                                    END {if (N_COUNT > MAX) {MAX = N_COUNT}; MAX=MAX-(MAX%WIDTH); print MAX/WIDTH}')
+
+    READ_COMMANDS=$(echo "$READ_FILTERS" | sort -t ',' -k 5,5 | awk -F ',' -vPREV_ITEM=\"\" -vITEM=\"\" -vCOUNT=0 -vN_COUNT=0 -vREMAINDER=0 -vCHUNK="$CHUNK" \
+                                                              '{if (NR == 1) {ITEM=$5} \
+                                                                else { PREV_ITEM=ITEM; ITEM=$5; COUNT++; \
+                                                                  if (PREV_ITEM != ITEM) \
+                                                                    {if (!PREV_ITEM) {PREV_ITEM="None"; N_COUNT=COUNT; COUNT=0} \
+                                                                    else {if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                    printf "%s:", PREV_ITEM; if (COUNT != 0) printf " "; \
+                                                                    for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; COUNT=0 }}}} \
+                                                                END {COUNT++; if (CHUNK != 0) {REMAINDER=COUNT%CHUNK; COUNT=(COUNT-REMAINDER)/CHUNK} else {COUNT=0}; \
+                                                                     printf "%s:", ITEM; if (COUNT != 0) printf " "; \
+                                                                     for(i=0; i<COUNT; i++) printf "#" ; printf "\n"; \
+                                                                     if (N_COUNT != 0) { \
+                                                                     printf "None:"; if (N_COUNT != 0) printf " "; \
+                                                                     if (CHUNK != 0) {REMAINDER=N_COUNT%CHUNK; N_COUNT=(N_COUNT-REMAINDER)/CHUNK} else {N_COUNT=0};
+                                                                     for(i=0; i<N_COUNT; i++) printf "#" ; printf "\n" }}')
+  fi
+
+# Add head if there are no commands
+else
+  if [ -n "$LOGS" ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | awk -F ',' 'BEGIN{printf "id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs\n"}
+                                                {print $0}')
+  elif [ "$STDIN" = 1 ]
+  then
+    READ_COMMANDS=$(echo "$READ_FILTERS" | awk -F ',' 'BEGIN{printf "id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs\n"}
+                                                 {print $0}')
+  else
+    READ_COMMANDS=$READ_FILTERS
+  fi
+fi
+
+# Just to check the output
+echo "$READ_COMMANDS"
