@@ -1,15 +1,6 @@
-# 1. Úloha IOS (2022)
+# Projekt do předmětu IOS - Operační systémy
 
-- [Popis úlohy](#brief)
-- [Specifikace rozhraní skriptu](#specs)
-- [Popis](#shortdesc)
-- [Podrobné požadavky](#desc)
-- [Implementační detaily](#implementation)
-- [Odevzdání projektu](#uploading)
-- [Rady](#tips)
-- [Návratová hodnota](#return)
-- [Příklady použití](#examples)
-    - [Rozšíření](#bonus_examples)
+Předmět je povinnou součástí bakalářskéhu studia na Fakultě informačních technologií Vysokého učení technického.
 
 # <a id="brief"></a>Popis úlohy
 
